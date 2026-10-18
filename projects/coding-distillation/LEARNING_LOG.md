@@ -1,0 +1,131 @@
+# Learning Log — Coding Distillation Project
+
+A running record, written after each task: what was built, a short quiz, and
+the answers. Read a task's quiz first and try it before looking at the answers.
+
+---
+
+## Task 1 — Project scaffold + subprocess sandbox
+
+Commit `6d9e0fe`. Tests: 6/6.
+
+### Summary
+- Branch `coding-distillation`; project at `projects/coding-distillation/`.
+- `uv` env on Python 3.12: torch 2.14, transformers 5.20, trl 1.16, peft 0.21,
+  datasets 5.1; MPS (Apple GPU) available.
+- `src/distill/sandbox.py` — `run(code, timeout=5.0) -> Result(passed, error)`.
+  Writes code to a temp file, runs `python -I` in a child process. Used by both
+  data validation and HumanEval scoring. Three safety rails:
+  1. **Timeout** — infinite loops are killed after 5 s → fail.
+  2. **stdin = /dev/null** — `input()` fails instantly instead of hanging.
+  3. **Sentinel** — appends `print("__DISTILL_DONE__")`; pass requires exit
+     code 0 *and* the sentinel printed (proof the end was reached).
+
+### Quiz
+1. Why run code in a separate subprocess instead of `exec()` inside the eval script?
+2. If the model's code calls `sys.exit(0)` before the tests run, what would a
+   naive "exit code 0 = pass" rule report, and how does the sentinel prevent it?
+3. Without `stdin=DEVNULL`, what happens to a solution calling `input()`? Why
+   does that matter more for eval than for teacher-data validation?
+4. The sandbox is "not a security boundary." What could model code still do,
+   and why is that acceptable here?
+
+### Answers
+**1.** *Your answer:* keep the processes independent and avoid changing the
+system. *Feedback:* "independent" is right, but a subprocess does **not**
+protect your system — the child runs as you, with your files and network. What
+it protects is **the evaluator itself**:
+
+| Problem | `exec()` in-process | Subprocess |
+|---|---|---|
+| Infinite loop | Evaluator hangs; can't reliably interrupt | `timeout=5` kills the child |
+| `sys.exit()` / crash | Kills the **whole eval run** | Only the child dies → recorded fail |
+| Leftover state | Problem 37 redefines `sorted`, breaks problem 38 | Fresh interpreter every time |
+| Memory leaks / segfaults | Accumulate or crash the evaluator | Vanish with the child |
+
+`-I` (isolated mode) also ignores `PYTHON*` env vars and user site-packages, and
+stops imports from the current directory.
+
+**2.** The program would exit 0 before `check(candidate)` ran, so a naive rule
+counts an untested solution as a pass — a model could get high pass@1 by
+emitting `exit()`. The sentinel is printed *after* the tests, so it only
+appears if execution got through them.
+
+**3.** The child inherits the parent's stdin; `input()` blocks, burning the
+full timeout per problem (or hanging interactively). With `DEVNULL`, `input()`
+raises `EOFError` immediately. It matters more for eval because the student's
+output is uncontrolled — a weak model may write `n = int(input())` in
+competitive-programming style — whereas teacher data is written under explicit
+"no I/O" rules and validated.
+
+**4.** The child runs as your user: it could delete or read files, make network
+calls, or spawn processes. The temp directory only changes where relative paths
+point. It's acceptable because the code comes from Opus and from a 0.5B model
+solving 164 known puzzles — not adversarial input. Untrusted code would need a
+real sandbox (container, no network, read-only filesystem, resource limits).
+
+---
+
+## Task 2 — Chat template + code extraction
+
+Commit `50220bd`. Tests: 13/13 (cumulative).
+
+### Summary
+`src/distill/format.py`:
+- **`to_messages(prompt, solution=None, explanation=None)`** — one fixed system
+  prompt and user template ("Complete the following Python function: …"), used
+  for **both training and evaluation**.
+  - No solution → `[system, user]`, for eval (the model writes the reply).
+  - With solution → adds an assistant turn: explanation, then **exactly one**
+    ```` ```python ```` block. This is the output structure being taught.
+- **`extract_code(text, prompt, entry_point)`** — turns a messy reply into a
+  runnable program:
+  - picks the **last** block containing `def <entry_point>` (skips usage
+    examples and earlier drafts);
+  - handles **truncated** replies (odd number of ``` fences → use the open block);
+  - **always prepends the HumanEval prompt**, which supplies imports and helper
+    functions; the model's full `def` follows and overrides the stub;
+  - body-only replies become prompt + body (still a valid function);
+  - no fences at all → falls back to the raw text.
+
+### Quiz
+1. Why must training and evaluation use the *exact same* system prompt and user
+   template? What could go wrong if eval used a different wording?
+2. A reply contains a usage example `print(total([1]))`, a first attempt, and a
+   corrected version. Why pick the *last* block containing `def total`?
+3. HumanEval's `decode_cyclic` prompt defines helper `encode_cyclic` above the
+   target. The model returns only `def decode_cyclic(...)`. What error occurs if
+   we run just the model's block, how does prepending the prompt fix it, and why
+   is defining `decode_cyclic` twice safe?
+4. Why could sloppy extraction make a 0.5B model's score wrong in either
+   direction? Which is more dangerous for a before/after comparison?
+
+### Answers
+**1.** Fine-tuning teaches a *conditional* behavior: "given this context,
+respond in this format." A different wording at eval is a distribution shift,
+and the fine-tuned model might not trigger its learned structure. It also
+confounds the comparison: base and fine-tuned must see identical inputs so any
+score difference comes from the weights alone, not the prompt.
+
+**2.** Small models often show an example call first or iterate (draft, then
+"actually, fix…"). The last *defining* block is the final answer. The first
+block might be a call with no definition (→ `NameError`) or a buggy draft.
+Requiring `def total` filters out usage snippets.
+
+**3.** The canonical `decode_cyclic` calls `encode_cyclic`, so running only the
+model's block raises `NameError: name 'encode_cyclic' is not defined`.
+Prepending the prompt defines the helper and any imports first. Defining a
+function twice is safe because `def` is just an assignment at runtime: the
+prompt's docstring-only stub binds the name first (a valid body that returns
+`None`), then the model's definition rebinds it before `check()` runs.
+
+**4.** *Too low:* correct solutions marked failing because of extraction bugs
+(wrong block, missing imports). *Too high:* rarer, e.g. counting code that
+never really ran — the sentinel guards against that. The most dangerous case is
+**asymmetric** bias: if the fine-tuned model formats more cleanly and a strict
+extractor only handles clean formatting, part of the "gain" is really just
+extraction-friendliness. A lenient, robust extractor measures coding ability
+rather than formatting quirks. Some formatting gain is legitimately part of the
+"structural" fine-tune, but we want to see it for what it is.
+
+---
