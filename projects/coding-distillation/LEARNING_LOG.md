@@ -244,3 +244,70 @@ the identical train/val split, so a change in results comes from what you
 changed, not from a different random split.
 
 ---
+
+## Task 7 — Teacher data generated in-session (Opus 5.5)
+
+Commit: "in-session Opus teacher dataset, validated". Tests: 31/31 (cumulative).
+(Done before Task 6's baseline run because generation only needs the validator,
+and the student model was still downloading on a slow connection.)
+
+### Summary
+- 10 Opus subagents ran **in parallel**, one per topic bucket (strings, lists,
+  math, dicts/sets, sorting/searching, recursion, DP, parsing, grids,
+  simulation), 40 problems each (15 easy / 17 medium / 8 hard).
+- Each agent wrote its batch via a throwaway Python script using `json.dumps`
+  (hand-written JSON with escaped newlines is error-prone), then self-checked
+  with `03_validate.py --dry-run`. Several went further and also ran their
+  docstring doctests and brute-force cross-checks — catching ~20 of their *own*
+  wrong expected values before validation.
+- Full validation: 400 raw → **397 accepted** → **357 train / 40 val**.
+- **Contamination margin:** the most HumanEval-like prompt scored Jaccard
+  0.036 (threshold 0.3) — essentially zero overlap.
+- **Found a dedupe gap:** 3 function names appeared in two batches
+  (`word_length_histogram`, `largest_all_ones_square`, `initials_from_name`)
+  — same task, different wording, so the whitespace-normalized prompt hash
+  missed them. Added a test, then made a reused `entry_point` count as a
+  duplicate → those 3 were dropped.
+
+### Quiz
+1. The teacher agents' own self-checks caught many wrong **expected values in
+   tests** (the solution was right, the hand-computed answer wrong). What would
+   have happened to those records without the checks, and is that a good or
+   bad failure mode?
+2. Why split generation into **topic buckets** across agents rather than asking
+   10 agents for "40 Python problems" each?
+3. The validator found **zero** contamination and only 3 duplicates. Why is
+   "all green" a moment to look harder, not relax? What did looking harder find?
+4. This is **sequence-level distillation** (train on the teacher's outputs).
+   What would **logit-level** distillation need that we don't have?
+
+### Answers
+**1.** The validator would have marked them `tests_failed` and dropped them —
+losing good examples, but never training on a wrong one. That's the *safe*
+failure direction: execution filtering has false negatives (good data lost),
+not false positives (bad data kept), as long as the tests themselves can't pass
+a wrong solution. The dangerous case is the reverse — wrong solution + wrong
+test that agree — which only independent checks (doctests, brute force) catch.
+
+**2.** Diversity. Independent agents given the same open prompt converge on the
+same "obvious" problems (reverse a string, FizzBuzz, two-sum…), giving
+duplicates and a narrow skill distribution. Assigned buckets force coverage of
+different algorithmic skills, and reduce duplicates to the few true overlaps
+between neighbouring buckets (strings ↔ parsing, DP ↔ grids — exactly where the
+3 duplicates came from).
+
+**3.** A filter that rejects nothing might be working perfectly — or might be
+unable to detect the problem. Checking the *margins* (max Jaccard 0.036 vs.
+0.3) showed contamination was genuinely absent, but checking for repeated
+function names showed the dedupe filter was blind to reworded duplicates. A
+filter's silence is only evidence if you know it can see the thing.
+
+**4.** The teacher's full **probability distribution over the vocabulary** at
+every token position (soft targets), so the student can be trained with a
+KL-divergence loss to match it. That carries much more information per example
+("this token 70%, that one 20%…") than a single sampled answer. It requires
+white-box access to the teacher and a **shared tokenizer** — impossible with
+Opus → Qwen via text. Sequence-level KD (Kim & Rush, 2016) is the standard
+fallback, and it's how most "distilled from GPT-4/Claude" open models are made.
+
+---

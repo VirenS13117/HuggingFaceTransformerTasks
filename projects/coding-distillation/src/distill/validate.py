@@ -48,15 +48,16 @@ def validate_records(lines, he_prompts, he_entry_points):
         if reason := check(r["prompt"], r["entry_point"], he_prompts, he_entry_points):
             reject(r, reason)
             continue
-        key = _normalize(r["prompt"])
-        if key in seen:
+        # A reused function name usually means the same task reworded.
+        keys = {_normalize(r["prompt"]), "name:" + r["entry_point"]}
+        if keys & seen:
             reject(r, "duplicate")
             continue
         result = run(r["solution"] + "\n\n" + r["tests"])
         if not result.passed:
             reject(r, "tests_failed", result.error)
             continue
-        seen.add(key)
+        seen |= keys
         accepted.append(r)
     return accepted, rejected
 

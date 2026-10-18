@@ -74,3 +74,10 @@ def test_split_is_deterministic_and_disjoint():
     assert len(val) == 2 and len(train) == 18
     assert {r["id"] for r in train}.isdisjoint({r["id"] for r in val})
     assert split(records) == (train, val)
+
+
+def test_rejects_reused_entry_point_name():
+    # Cross-batch near-duplicates: same task reworded under the same name.
+    other = rec(id="gen-0002", prompt='def double_it(x: int) -> int:\n    """Twice the input.\n    >>> double_it(3)\n    6\n    """\n')
+    ok, bad = validate_records([rec(), other], **HE)
+    assert len(ok) == 1 and reasons(bad) == ["duplicate"]
