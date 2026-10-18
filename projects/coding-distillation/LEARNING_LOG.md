@@ -129,3 +129,59 @@ rather than formatting quirks. Some formatting gain is legitimately part of the
 "structural" fine-tune, but we want to see it for what it is.
 
 ---
+
+## Task 3 — HumanEval contamination check
+
+Commit: see `git log` ("HumanEval contamination check"). Tests: 17/17 (cumulative).
+
+### Summary
+`src/distill/contamination.py`:
+- `load_humaneval()` — loads the 164 HumanEval problems from the HF Hub
+  (`openai/openai_humaneval`, split `test`).
+- `ngrams(text, n=5)` — lowercases, keeps alphanumeric tokens, returns the set
+  of consecutive 5-word tuples.
+- `jaccard(a, b)` — |A ∩ B| / |A ∪ B| (0.0 when both are empty).
+- `check(prompt, entry_point, he_prompts, he_entry_points, threshold=0.3)` —
+  returns `"contamination_name"` if the function name equals any HumanEval
+  entry point, `"contamination_ngram"` if 5-gram Jaccard ≥ 0.3 against any
+  HumanEval prompt, otherwise `None`.
+- A renamed copy of `has_close_elements` scores Jaccard **0.49**, so it is
+  caught; an unrelated run-length-encoding prompt scores ~0.
+
+### Quiz
+1. What is **benchmark contamination**, and why would it make our before/after
+   HumanEval comparison meaningless even if training "worked"?
+2. Why use **5-grams of words** rather than single words (1-grams) for the
+   similarity check? What goes wrong with 1-grams?
+3. Why a **set-based** Jaccard rather than counting raw shared words?
+4. Name a kind of contamination this check would **miss**.
+
+### Answers
+**1.** Contamination means benchmark problems (or near-copies) leak into
+training data. The model can then score well by *recalling* answers rather than
+solving new problems, so the "gain" measures memorization, not improved
+skill. Our teacher (Opus) has certainly seen HumanEval, so it might reproduce
+those problems when asked for "coding problems" — that's why subagents are
+told to avoid them *and* we check mechanically.
+
+**2.** With 1-grams, almost every Python docstring shares words like `the`,
+`list`, `return`, `int`, `given`, `numbers`, so unrelated problems look
+similar → many false rejections. A 5-word sequence like "are any two numbers
+closer" is specific; sharing many of them strongly suggests copied text.
+Longer n is stricter (fewer false positives) but misses light paraphrases;
+5 is a common compromise (similar to what n-gram decontamination reports for
+GPT-3/4 use, which typically use 8–13 *token* n-grams over much longer docs).
+
+**3.** Sets make the score length-normalized and bounded in [0, 1]: a long
+prompt can't look "similar" just by having many words, and repeated phrases
+don't count multiple times. That lets one threshold (0.3) work across prompts
+of very different lengths.
+
+**4.** Semantic paraphrases: the same task described in completely different
+words (e.g. "return True if some pair differs by less than t" vs. HumanEval's
+wording) shares few 5-grams and passes. Also problems whose *solution* matches
+a HumanEval solution but whose prompt is new. Catching those would need
+embedding similarity or manual review — out of scope here; the subagent
+instructions are the first line of defense.
+
+---
