@@ -185,3 +185,62 @@ embedding similarity or manual review — out of scope here; the subagent
 instructions are the first line of defense.
 
 ---
+
+## Task 5 — Teacher-data validation
+
+Commit: "validate teacher data by execution, contamination, dedupe". Tests: 25/25 (cumulative).
+(Task 4 — model loading — is being finished in parallel while the model downloads.)
+
+### Summary
+`src/distill/validate.py` + `scripts/03_validate.py`. Every raw teacher record
+goes through a **filter pipeline**; the first failing stage rejects it with a
+reason:
+
+```
+line → parse_error? → schema? → contamination_name / _ngram? → duplicate? → tests_failed? → accepted
+```
+
+- **schema** — all 8 fields are non-empty strings, ≥3 `assert`s, and
+  `def <entry_point>` appears in both prompt and solution.
+- **contamination** — Task 3's check against all 164 HumanEval prompts.
+- **duplicate** — prompts compared after collapsing whitespace + lowercasing.
+- **tests_failed** — `solution + tests` run in the Task 1 sandbox.
+- `split()` shuffles with a fixed seed (42) and holds out 10% as validation.
+- The script writes `data/train.jsonl` / `val.jsonl` as chat `{"messages": [...]}`
+  rows (Task 2's `to_messages`), plus `rejected.jsonl` with reasons. `--dry-run`
+  only prints stats — the teacher subagents use it to self-check their batches.
+
+### Quiz
+1. Why put the **cheap checks first** (parse, schema, contamination, dedupe)
+   and the sandbox execution **last**?
+2. Why is it important that every training solution **actually passes tests**?
+   What does training on a subtly wrong solution teach the student?
+3. Why hold out a **validation split** if we're going to evaluate on HumanEval
+   anyway? What does `eval_loss` tell us that HumanEval doesn't?
+4. Why is the shuffle **seeded**?
+
+### Answers
+**1.** Running code costs a process launch (~30–50 ms) and up to a 5 s timeout;
+the others are microseconds. Rejecting early saves that work and gives the most
+specific reason (a contaminated record is reported as contaminated, not "also
+passes tests"). The dedupe key is only added to `seen` *after* a record is
+accepted, so a failing first copy doesn't block a later correct copy.
+
+**2.** In SFT the model imitates its targets token by token — it has no idea
+which ones are wrong. A buggy solution teaches the bug as "correct style";
+distillation copies the teacher's mistakes along with its strengths.
+Execution-filtering (keeping only verified outputs) is a standard trick:
+it's the core of "rejection sampling" / self-instruct pipelines for code.
+
+**3.** HumanEval measures final capability, but only after training ends and
+only on a different distribution. `eval_loss` on held-out *teacher* data,
+computed each epoch, tells us whether the model is learning generalizable
+patterns (both losses drop) or **memorizing** the training set (train loss keeps
+dropping, val loss rises → overfitting). With ~350 examples and 3 epochs,
+that's a real risk worth watching.
+
+**4.** Reproducibility: rerunning `03_validate.py` on the same raw data gives
+the identical train/val split, so a change in results comes from what you
+changed, not from a different random split.
+
+---
