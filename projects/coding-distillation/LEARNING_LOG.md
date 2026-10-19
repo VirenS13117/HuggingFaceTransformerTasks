@@ -311,3 +311,50 @@ Opus → Qwen via text. Sequence-level KD (Kim & Rush, 2016) is the standard
 fallback, and it's how most "distilled from GPT-4/Claude" open models are made.
 
 ---
+
+## Task 4 — Load the student model, greedy generation, setup smoke
+
+Commit: "model loading, greedy generation, setup script". Tests: 31/31 (no new unit tests — this task is verified by the smoke run).
+
+### Summary
+- `modeling.py`: `pick_device()` (mps if available, else cpu), `load_model(device,
+  adapter=None)` in **fp32**, optionally loading a LoRA adapter and **merging**
+  it into the base weights, and `generate()` — chat template + greedy decoding,
+  returning only the *new* tokens.
+- The download stalled on HF's xet backend; resumed over plain HTTP
+  (`HF_HUB_DISABLE_XET=1`). The 988 MB safetensors took ~1.5 h on this link.
+- Smoke run: `HumanEval problems: 164`, `Loaded model on mps`, and the sample
+  for `has_close_elements` was *already* "explanation, then ```python block".
+  Interesting: the base Instruct model mostly follows our format already, so
+  fine-tuning is teaching *content/quality and consistency*, not the format
+  from scratch.
+
+### Quiz
+1. Why does `generate()` slice off the prompt tokens before decoding?
+2. Why `merge_and_unload()` the adapter for evaluation instead of keeping it
+   as a separate PEFT wrapper?
+3. Why fp32 on a 0.5B model, when bf16 would halve memory?
+4. Why greedy decoding (`do_sample=False`) for pass@1 here?
+
+### Answers
+**1.** A causal LM's `generate` returns prompt + continuation as one sequence.
+Decoding the whole thing would put the system prompt and the HumanEval
+docstring into the "completion", and `extract_code` could then pick up the
+prompt's code instead of the model's answer.
+
+**2.** Merging folds `W + (alpha/r)·B·A` into a single weight matrix, so
+inference is the plain model — no extra matmuls per layer, and identical code
+paths for base and fine-tuned evaluation (a fairer comparison). The adapter
+file on disk stays small; merging happens in memory at load time.
+
+**3.** 0.5B × 4 bytes ≈ 2 GB — trivially fits. bf16 support on Apple MPS has
+been patchy (some ops fall back to CPU or lose precision), and fp32 removes a
+whole class of "is it the dtype?" bugs. When memory isn't the constraint,
+pick the boring, exact option.
+
+**4.** Greedy is deterministic: one problem → one answer, so a single run gives
+an exact pass@1 and base vs. fine-tuned differences can't be sampling noise.
+Sampled pass@1 needs n samples per problem and the unbiased estimator
+`1 − C(n−c, k)/C(n, k)` — n× the compute for a lower-variance estimate.
+
+---
