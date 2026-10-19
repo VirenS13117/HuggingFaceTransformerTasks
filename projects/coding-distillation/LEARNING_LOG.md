@@ -414,3 +414,64 @@ differences, and the eval harness version. Always compare numbers measured
 with the *same* harness — which is why we measure our own baseline.
 
 ---
+
+## Task 8 — LoRA SFT on the teacher data
+
+Commit: "LoRA SFT training script". Tests: 31/31 (verified by smoke run + mask check).
+
+### Summary
+- `04_train.py`: rows → trl's conversational **prompt–completion** format
+  (`prompt` = system+user, `completion` = assistant), LoRA r=16/α=32 on all
+  linear layers, 3 epochs, effective batch 16 (4 × grad-accum 4), lr 2e-4
+  cosine with 5% warmup, `completion_only_loss=True`.
+- **Mask check:** of 361 tokens in a val example, only 171 carry loss — exactly
+  the assistant explanation + code block + `<|im_end|>`. (trl 1.16 encodes
+  this as `labels = -100` on prompt tokens rather than a `completion_mask`
+  column, so the plan's check needed adjusting.)
+- Full run: 69 optimizer steps, **6.4 min** on MPS.
+
+| epoch | train loss (last log) | eval_loss | eval token acc |
+|---|---|---|---|
+| 0 (smoke) | — | 1.040 | 0.777 |
+| 1 | 0.912 | 0.890 | 0.797 |
+| 2 | 0.710 | 0.872 | 0.805 |
+| 3 | 0.672 | 0.873 | 0.806 |
+
+- Train loss keeps falling while eval_loss flattens after epoch 2: the gap
+  (0.67 vs 0.87) is the start of overfitting/memorization — mild, not sharp.
+
+### Quiz
+1. Why must the loss be masked to the completion? What would the model learn if
+   it were trained on the system/user tokens too?
+2. LoRA with r=16 on all linear layers trains how much of the model, roughly —
+   and why does that matter for a 357-example dataset?
+3. Eval loss went 0.890 → 0.872 → 0.873 while train loss went 0.91 → 0.67.
+   What does that tell you, and what would you change next time?
+4. Does lower eval_loss on *our* val set guarantee higher HumanEval pass@1?
+
+### Answers
+**1.** The prompt is given at inference time; we never need the model to
+*produce* it. Training on it spends capacity (and gradient) on predicting the
+fixed system prompt and the problem statements — the model would partly learn
+to write HumanEval-style docstrings rather than answers. Masking focuses all
+the learning signal on "given this problem, respond like the teacher."
+
+**2.** About 1–2% of parameters (LoRA adds `r·(d_in+d_out)` per matrix: ~8.8M
+trainable vs ~494M). With only ~357 examples, full fine-tuning would overfit
+fast and risk catastrophic forgetting of the base model's coding knowledge.
+LoRA's low rank is a strong regularizer: it can shift *style and habits*
+(format, concision) without rewriting what the model knows.
+
+**3.** The model got most of the transferable gain by epoch 2; epoch 3 mostly
+memorized the training answers (train ↓, eval flat). Next time: 2 epochs, or
+keep 3 but `load_best_model_at_end` on eval_loss, or more/diverse data — the
+real fix for a small dataset is more data.
+
+**4.** No. Our val set is the *teacher's* distribution — eval_loss measures how
+well the student imitates Opus's wording token by token. HumanEval measures
+functional correctness on a different distribution. A model can imitate style
+better and still not solve harder problems; it can even lose ability if it
+over-adapts to a narrow style. That's exactly why the final judge is an
+external, execution-based benchmark.
+
+---
