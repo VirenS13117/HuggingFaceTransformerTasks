@@ -475,3 +475,60 @@ over-adapts to a narrow style. That's exactly why the final judge is an
 external, execution-based benchmark.
 
 ---
+
+## Task 9 — Fine-tuned eval, report, README
+
+Commit: "HumanEval before/after results and README". Tests: 31/31.
+
+### Summary
+- **Base 86/164 = 52.4% → fine-tuned 61/164 = 37.2%.** 14 fixed, 39 broken.
+  The distilled student is *worse* on HumanEval.
+- What transferred: the teacher's style. Mean answer length 1,808 → 332 chars;
+  truncation SyntaxErrors 12 → 2 (most of the 14 fixes).
+- What went wrong: AssertionErrors 48 → 82. The teacher's explanation is one
+  confident sentence; the student learned to *emit a confident sentence* and
+  then implement it — and the sentence is often invented
+  (`sum_product`: "a product is one if any number is zero"; `get_positive`
+  turned into a generator because "it's more memory efficient", breaking the
+  `list` return type). Imitation of form outran imitation of competence.
+- The base model's long explanations were working as chain-of-thought; the
+  terse format removed its thinking room before writing code.
+- Written up honestly in `README.md`; `results.md` has the fixed/broken lists
+  and side-by-side samples. No tuning (out of scope per the plan).
+
+### Quiz
+1. eval_loss improved (1.04 → 0.87) but HumanEval dropped 15 points. Explain
+   how both can be true.
+2. Why did *shorter* answers hurt a model that already "knew" Python?
+3. If you could change one thing about the teacher data to fix this, what
+   would it be?
+4. 14 fixed, 39 broken. Why report both lists instead of just the net score?
+
+### Answers
+**1.** eval_loss measures how well the student predicts the *teacher's tokens*
+on teacher-style problems — imitation. HumanEval measures whether the code
+*runs correctly* on different problems. The student got better at sounding
+like Opus (the cheap, surface part of the signal: phrasing, brevity, format)
+without gaining Opus's problem-solving — a 0.5B model can't absorb that from
+357 examples. Optimizing a proxy (imitation loss) is not the same as
+optimizing the goal (correctness): Goodhart's law in miniature.
+
+**2.** An autoregressive model "thinks" only by generating tokens. Writing out
+the steps first conditions the code on that reasoning — chain-of-thought. The
+teacher can afford one line because its reasoning happens internally at a
+much larger scale; the student can't. Teaching a small model to skip
+reasoning tokens removes its compute budget for the problem.
+
+**3.** Make the explanation *reasoning that precedes the code*: restate the
+requirement, edge cases (empty input, ties), then the algorithm — e.g. the
+"rationale" style of distilling step-by-step (Hsieh et al., 2023). That
+transfers the teacher's process, not just its conclusions. (Also: more data,
+and 1–2 epochs.)
+
+**4.** The net (−25) hides that fine-tuning did two different things: it
+*fixed* a specific failure mode (truncation from rambling) and *introduced*
+another (confabulated reasoning). Per-problem diffs show *why* the score
+moved, which is what tells you what to change. Two models with the same score
+can fail on entirely different problems.
+
+---
