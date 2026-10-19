@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from distill.contamination import load_humaneval
-from distill.evaluate import build_program, compare, load_done, pass_at_1
+from distill.evaluate import build_program, compare, ensure_trailing_newline, load_done, pass_at_1
 from distill.format import extract_code, to_messages
 from distill.modeling import generate, load_model, pick_device
 from distill.sandbox import run
@@ -21,6 +21,7 @@ def evaluate(adapter, out_path, limit, device):
     print(f"{len(done)} done, {len(todo)} to go -> {out_path}")
     if todo:
         model, tokenizer = load_model(pick_device(device), adapter)
+        ensure_trailing_newline(out_path)
     with open(out_path, "a") as f:
         for i, p in enumerate(todo, 1):
             completion = generate(model, tokenizer, to_messages(p["prompt"]))

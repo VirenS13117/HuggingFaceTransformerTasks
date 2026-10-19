@@ -60,3 +60,10 @@ def compare(base, ft, n_samples=3):
             "",
         ]
     return "\n".join(lines)
+
+
+def ensure_trailing_newline(path):
+    """Terminate a torn last line so appended records start on their own line."""
+    if path.exists() and path.stat().st_size and not path.read_bytes().endswith(b"\n"):
+        with open(path, "a") as f:
+            f.write("\n")
