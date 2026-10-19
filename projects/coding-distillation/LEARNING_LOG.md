@@ -358,3 +358,59 @@ Sampled pass@1 needs n samples per problem and the unbiased estimator
 `1 − C(n−c, k)/C(n, k)` — n× the compute for a lower-variance estimate.
 
 ---
+
+## Task 6 — HumanEval pass@1 harness + baseline
+
+Commit: "HumanEval pass@1 harness with resume and compare report". Tests: 31/31 (5 new in `test_evaluate.py`).
+
+### Summary
+- `evaluate.py`: `build_program` (code + HumanEval `test` + `check(entry_point)`),
+  `load_done` (resume; skips a torn last line), `pass_at_1`, and `compare` →
+  markdown table + "fixed / broken by fine-tuning" lists + side-by-side samples.
+- `05_eval.py`: generate → `extract_code` → sandbox → append one JSON line per
+  problem with `flush()`, so a crash loses at most one problem and a re-run
+  resumes (smoke re-run printed `5 done, 0 to go`).
+- **Baseline: 86/164 = 52.4% pass@1** (plan guessed 25–40%; Qwen reports
+  ~61.6% for this model with its own prompt/harness — prompts and token caps
+  move this number a lot).
+- Failure breakdown: 48 AssertionError (wrong logic), **12 SyntaxError — almost
+  all truncation at 512 new tokens**: the base model re-copies the whole
+  docstring and appends "Example usage" prints, and gets cut off mid-line.
+  The teacher data is concise (no example usage), so a hypothesis to test in
+  Task 9: fine-tuning should recover some of these.
+
+### Quiz
+1. The base model's answer for `has_close_elements` compared only *adjacent*
+   numbers. Why did it still look correct on the docstring examples?
+2. Why append + `flush()` one line per problem instead of writing all results
+   at the end?
+3. 12 failures were truncation, not logic. Should we raise `max_new_tokens` to
+   1024 for the fine-tuned run only, since it's "fairer"?
+4. Our 52.4% vs. Qwen's reported 61.6% for the same weights. Name two reasons a
+   published number can differ from yours.
+
+### Answers
+**1.** Docstring examples are tiny and often sorted, where adjacent-only checks
+happen to work. HumanEval's hidden `check()` includes an unsorted case
+(`[1.0, 2.0, 5.9, 4.0, 5.0]`, where 5.9 and 5.0 are not adjacent). That's why
+benchmarks use held-out tests, and why our teacher data required ≥3 asserts
+beyond the docstring.
+
+**2.** Resumability and crash-safety: a 15–30 min run on a laptop can die
+(sleep, OOM, Ctrl-C). With per-line flushes the output file is always a valid
+prefix of results, and `load_done` skips what's done. The cost is a torn last
+line on a hard crash — which is exactly why `load_done` skips malformed lines.
+
+**3.** No. Changing the decoding budget for one arm confounds the comparison:
+any gain could be the bigger budget, not the fine-tuning. Both arms must use
+identical settings. Being concise enough to fit the budget is a *legitimate*
+behavior the student can learn — that's part of what distillation transfers.
+
+**4.** (a) Prompt format — Qwen's eval likely uses a different
+system/user wrapping or completion-style prompting, not our explain-then-code
+format. (b) Decoding budget and stop rules — e.g. stopping at the end of the
+function rather than letting the model ramble. Also: post-processing/extraction
+differences, and the eval harness version. Always compare numbers measured
+with the *same* harness — which is why we measure our own baseline.
+
+---
